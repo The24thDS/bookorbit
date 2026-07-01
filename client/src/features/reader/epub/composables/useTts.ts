@@ -40,6 +40,16 @@ export interface TtsOptions {
   getTotalSections?: () => number
   /** Override the per-request character cap (default 4000, matches the proxy). */
   maxChunkChars?: number
+  /**
+   * How many upcoming blocks to synthesise ahead of the one playing. The
+   * sidecar processes one job at a time (`TTS_MAX_CONCURRENT_JOBS=1`), so the
+   * prefetch fan-out keeps it zero-idle — the next request is already queued
+   * the instant the current finishes, hiding the network/JS gap that a
+   * sequential prefetch would reintroduce. Deeper buffers smooth short-block
+   * lag at the cost of up to `prefetchDepth` discarded blobs on stop/skip.
+   * Default 3.
+   */
+  prefetchDepth?: number
 }
 
 /** One synthesizable unit: either already a Blob (prefetched) or text to send. */
@@ -49,6 +59,8 @@ interface Chunk {
 }
 
 const ACTIVITY_TICK_MS = 30_000
+/** Default number of upcoming blocks to keep warm in the prefetch queue. */
+const DEFAULT_PREFETCH_DEPTH = 3
 
 /**
  * Strip foliate's W3C SSML wrapper to the plain text the PocketTTS API expects.
@@ -142,7 +154,6 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
   const onEndOfBook = options.onEndOfBook
   const getSectionIndex = options.getSectionIndex
   const getTotalSections = options.getTotalSections
-  const maxChunkChars = options.maxChunkChars ?? 4000
 
   let audio: HTMLAudioElement | null = null
   let audioWired = false
@@ -153,10 +164,14 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
 
   /** Remaining chunks of the block currently being played (text or blob-backed). */
   let currentChunks: Chunk[] = []
-  /** Next block, fully synthesised in the background while the current plays. */
-  let prefetchedChunks: Chunk[] | null = null
-  /** Resolves with the prefetched block (or null = end of section) when ready. */
-  let prefetchPromise: Promise<Chunk[] | null> | null = null
+  /** FIFO of upcoming blocks, each synthesised in its own in-flight promise. */
+  const prefetchQueue: Promise<Chunk[] | null>[] = []
+  /** True once the prefetch cursor reached the end of the current section. */
+  let sectionExhausted = false
+  /** Overrides the per-request cap (default 4000, matches the proxy). */
+  const maxChunkChars = options.maxChunkChars ?? 4000
+  /** Number of upcoming blocks to keep synthesised ahead of the current block. */
+  const prefetchDepth = Math.max(1, options.prefetchDepth ?? DEFAULT_PREFETCH_DEPTH)
 
   let stopped = true
   let advancing = false
@@ -234,8 +249,8 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
       loadTimeout = null
     }
     currentChunks = []
-    prefetchedChunks = null
-    prefetchPromise = null
+    prefetchQueue.length = 0
+    sectionExhausted = false
     isPlaying.value = false
     isLoading.value = false
   }
@@ -282,23 +297,19 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     await el.play()
   }
 
-  /** Prefetch the next block (cursor advance) into prefetched chunks. */
-  function prefetchNext(): void {
-    const view = getView()
-    const tts = view?.tts
-    if (!tts?.next) return
-    if (prefetchController) prefetchController.abort()
-    prefetchController = new AbortController()
-    const signal = prefetchController.signal
-    prefetchPromise = (async (): Promise<Chunk[] | null> => {
-      const ssml = tts.next!() ?? ''
-      if (!ssml) return null // end of current section's blocks
+  /**
+   * Synthesise one block's text into a ready-to-play chunk list. Runs as an
+   * in-flight promise; on abort it resolves `null` (treated as a skip), on any
+   * other error it surfaces the message and halts playback.
+   */
+  function synthesizeBlockPromise(ssml: string): Promise<Chunk[] | null> {
+    return (async (): Promise<Chunk[] | null> => {
       const text = ssmlToPlainText(ssml).trim()
-      if (!text) return null
+      if (!text) return null // empty block → behaves like an end-of-section marker
       const chunks: Chunk[] = splitBlock(text, maxChunkChars).map((t) => ({ text: t, blob: null }))
-      // Synthesise every chunk now so the next block is gap-free when 'ended' fires.
+      const signal = prefetchController!.signal
       for (const chunk of chunks) {
-        if (signal.aborted) return chunks
+        if (signal.aborted) return null
         chunk.blob = await synthesizeBlock(chunk.text, signal)
       }
       return chunks
@@ -310,6 +321,32 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
       }
       return null
     })
+  }
+
+  /**
+   * Keep the prefetch queue topped up to `prefetchDepth` upcoming blocks.
+   * The foliate TTS cursor advances synchronously here (one `tts.next()` per
+   * block), and each block's synthesis fires as its own in-flight promise so
+   * the sidecar — which processes one job at a time — stays zero-idle: the
+   * next request is already queued the instant the current finishes. When the
+   * cursor reaches the end of the section, a resolved-`null` sentinel is queued
+   * and `sectionExhausted` is set so we stop topping up until the next section.
+   */
+  function topUpPrefetch(): void {
+    if (sectionExhausted) return
+    const view = getView()
+    const tts = view?.tts
+    if (!tts?.next) return
+    if (!prefetchController) prefetchController = new AbortController()
+    while (prefetchQueue.length < prefetchDepth && !sectionExhausted) {
+      const ssml = tts.next!() ?? ''
+      if (!ssml) {
+        prefetchQueue.push(Promise.resolve(null))
+        sectionExhausted = true
+        break
+      }
+      prefetchQueue.push(synthesizeBlockPromise(ssml))
+    }
   }
 
   /** Advance the cursor one block: next chunk, next block, or next section. */
@@ -328,14 +365,34 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
       return
     }
 
-    // Current block exhausted → wait for the prefetched next block.
-    const prefetched = prefetchPromise ? await prefetchPromise : prefetchedChunks
+    // Current block exhausted → pull the next prefetched block (FIFO) or the
+    // end-of-section sentinel off the front of the queue.
+    let next: Promise<Chunk[] | null> | null = prefetchQueue.shift() ?? null
+    if (!stopped && !next) {
+      // Queue drained faster than it was topped (short blocks). Refill, then
+      // retry — a top-up is synchronous and may add a sentinel.
+      topUpPrefetch()
+      next = prefetchQueue.shift() ?? null
+    }
     if (stopped) return
-    prefetchedChunks = null
-    prefetchPromise = null
+    if (!next) {
+      await advanceSection()
+      return
+    }
+
+    let prefetched: Chunk[] | null = null
+    try {
+      prefetched = await next
+    } catch (err) {
+      if ((err as Error)?.name === 'AbortError') return
+      error.value = err instanceof Error ? err.message : 'Read aloud failed.'
+      resetPlayback()
+      return
+    }
+    if (stopped) return
 
     if (!prefetched || prefetched.length === 0) {
-      // End of the current section's blocks → cross into the next section.
+      // Sentinel resolved: the section's blocks are exhausted.
       await advanceSection()
       return
     }
@@ -345,7 +402,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     try {
       await playChunk(currentChunks.shift()!)
       feedActivity()
-      prefetchNext()
+      topUpPrefetch()
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') return
       error.value = err instanceof Error ? err.message : 'Read aloud failed.'
@@ -355,6 +412,14 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
 
   /** Cross a section boundary: renderer advance → load → re-init TTS → continue. */
   async function advanceSection(): Promise<void> {
+    // Cancel any prefetch still running for the section we just finished.
+    if (prefetchController) {
+      prefetchController.abort()
+      prefetchController = null
+    }
+    prefetchQueue.length = 0
+    sectionExhausted = false
+
     const view = getView()
     if (!view?.goTo || !view?.addEventListener) {
       stopAtEndOfBook()
@@ -422,7 +487,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
       currentChunks = splitBlock(text, maxChunkChars).map((t) => ({ text: t, blob: null }))
       await playChunk(currentChunks.shift()!)
       feedActivity()
-      prefetchNext()
+      topUpPrefetch()
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') return
       stopAtEndOfBook()
@@ -469,7 +534,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
       startActivityInterval()
       await playChunk(currentChunks.shift()!)
       feedActivity()
-      prefetchNext()
+      topUpPrefetch()
     } catch (err) {
       if ((err as Error)?.name === 'AbortError') return
       error.value = err instanceof Error ? err.message : 'Read aloud failed.'

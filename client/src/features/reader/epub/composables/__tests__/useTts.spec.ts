@@ -262,7 +262,9 @@ describe('useTts', () => {
     expect(error.value).toBe('Read aloud is unavailable right now.')
   })
 
-  it('narrates continuously block-to-block across the section using prefetched audio', async () => {
+  it('narrates continuously block-to-block with a depth-3 prefetch buffer (no per-block synth gap)', async () => {
+    // Default prefetchDepth = 3. Three-block section: block 0 plays while blocks
+    // 1 and 2 are synthesised in the background; the section then ends.
     const view = makeView([[ssml('Block zero'), ssml('Block one'), ssml('Block two')]])
     vi.mocked(api).mockImplementation(okSynth())
     const fake = installAudio()
@@ -272,24 +274,49 @@ describe('useTts', () => {
     await readAloud()
     await flush()
 
-    // Block 0 synthesised+played (call 1); block 1 prefetched (call 2).
+    // Block 0 synthesised+played (call 1); blocks 1 and 2 prefetched (calls 2,3).
+    // tts.next() advanced the cursor three times → block 1, block 2, then '' sentinel.
     const callsAfterStart = vi.mocked(api).mock.calls.length
-    expect(callsAfterStart).toBe(2)
-    expect(view.nextMock).toHaveBeenCalledTimes(1) // prefetch advanced the cursor once
+    expect(callsAfterStart).toBe(3)
+    expect(view.nextMock).toHaveBeenCalledTimes(3) // block1, block2, end-of-section sentinel
 
-    // End of block 0 → block 1 plays from the prefetched blob (no new synth);
-    // block 2 is prefetched (one new api call); onActivity fires for block 1.
+    // End of block 0 → block 1 plays from the already-prefetched blob; NO new
+    // synthesis (the buffer covered it). onActivity fires for block 1.
     fake.dispatch('ended')
     await flush()
     expect(fake.audio.play.mock.calls.length).toBe(2)
     expect(onActivity).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(api).mock.calls.length).toBe(callsAfterStart + 1) // only block 2 prefetch
+    expect(vi.mocked(api).mock.calls.length).toBe(callsAfterStart) // still 3 — buffer absorbed it
 
-    // End of block 1 → block 2 plays from prefetch; nothing left to prefetch.
+    // End of block 1 → block 2 plays from the buffer; still no new synth.
     fake.dispatch('ended')
     await flush()
     expect(fake.audio.play.mock.calls.length).toBe(3)
     expect(onActivity).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(api).mock.calls.length).toBe(callsAfterStart)
+  })
+
+  it('prefetchDepth caps how many blocks are synthesised ahead', async () => {
+    const view = makeView([[ssml('b0'), ssml('b1'), ssml('b2'), ssml('b3'), ssml('b4')]])
+    vi.mocked(api).mockImplementation(okSynth())
+    installAudio()
+
+    // depth 2: block 0 (current) + blocks 1,2 prefetched → 3 synth calls, 2 cursor advances.
+    const { readAloud } = useTts(() => view, { prefetchDepth: 2 })
+    await readAloud()
+    await flush()
+    expect(vi.mocked(api).mock.calls.length).toBe(3)
+    expect(view.nextMock).toHaveBeenCalledTimes(2)
+
+    // Default depth 3 on a five-block section: block 0 + blocks 1,2,3 → 4 synth, 3 advances.
+    const view2 = makeView([[ssml('b0'), ssml('b1'), ssml('b2'), ssml('b3'), ssml('b4')]])
+    vi.mocked(api).mockReset().mockImplementation(okSynth())
+    installAudio()
+    const { readAloud: readAloud2 } = useTts(() => view2)
+    await readAloud2()
+    await flush()
+    expect(vi.mocked(api).mock.calls.length).toBe(4)
+    expect(view2.nextMock).toHaveBeenCalledTimes(3)
   })
 
   it('prefetch is aborted on stop (in-flight fetch does not linger or error)', async () => {

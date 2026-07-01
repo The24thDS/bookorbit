@@ -257,6 +257,7 @@ const tts = useTts(() => foliateView.value as unknown as FoliateTtsView | null, 
   onEndOfBook: () => toast.info('Finished reading aloud.', { duration: 3000 }),
   getSectionIndex: () => sectionIndex.value,
   getTotalSections: () => totalSections.value,
+  prefetchDepth: 3,
 })
 const ttsAvailable = computed(() => hasPermission(Permission.TtsAccess) && tts.statusEnabled.value && tts.statusReachable.value)
 watch(
