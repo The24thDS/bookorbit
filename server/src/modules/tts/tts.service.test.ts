@@ -106,18 +106,36 @@ describe('TtsService', () => {
   });
 
   describe('getStatus', () => {
-    it('returns enabled=false without contacting the sidecar when disabled', async () => {
+    it('returns enabled=false with the effective cap, without contacting the sidecar when disabled', async () => {
       const isReachable = vi.fn();
       const { service } = makeService({ enabled: false, client: { isReachable } });
-      await expect(service.getStatus()).resolves.toEqual({ enabled: false, reachable: false });
+      await expect(service.getStatus()).resolves.toEqual({
+        enabled: false,
+        reachable: false,
+        maxChunkChars: TTS_INPUT_HARD_CAP,
+      });
       expect(isReachable).not.toHaveBeenCalled();
     });
 
     it('returns the sidecar reachability when enabled', async () => {
       const isReachable = vi.fn().mockResolvedValue(true);
       const { service } = makeService({ client: { isReachable } });
-      await expect(service.getStatus()).resolves.toEqual({ enabled: true, reachable: true });
+      await expect(service.getStatus()).resolves.toEqual({
+        enabled: true,
+        reachable: true,
+        maxChunkChars: TTS_INPUT_HARD_CAP,
+      });
       expect(isReachable).toHaveBeenCalled();
+    });
+
+    it('reports the configured lower cap clamped to the hard cap', async () => {
+      const isReachable = vi.fn().mockResolvedValue(true);
+      const { service } = makeService({ maxChunkChars: 10, client: { isReachable } });
+      await expect(service.getStatus()).resolves.toEqual({
+        enabled: true,
+        reachable: true,
+        maxChunkChars: 10,
+      });
     });
   });
 });

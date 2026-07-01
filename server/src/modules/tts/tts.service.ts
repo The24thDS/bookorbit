@@ -7,6 +7,8 @@ import { TTS_INPUT_HARD_CAP } from './dto';
 export interface TtsStatus {
   enabled: boolean;
   reachable: boolean;
+  /** Effective per-request input cap the client must split under. */
+  maxChunkChars: number;
 }
 
 /**
@@ -69,9 +71,13 @@ export class TtsService {
   }
 
   async getStatus(): Promise<TtsStatus> {
-    if (!this.enabled) return { enabled: false, reachable: false };
+    // Report the effective cap (the same value assertCap enforces) so the
+    // client knows how to split overlong blocks. Returned even when the sidecar
+    // is down/disabled, so a configured lower cap still constrains splitting.
+    const cap = Math.min(this.maxChunkChars, TTS_INPUT_HARD_CAP);
+    if (!this.enabled) return { enabled: false, reachable: false, maxChunkChars: cap };
     const reachable = await this.client.isReachable();
-    return { enabled: true, reachable };
+    return { enabled: true, reachable, maxChunkChars: cap };
   }
 
   private assertEnabled(): void {

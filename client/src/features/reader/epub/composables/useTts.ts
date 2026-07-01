@@ -27,6 +27,8 @@ export interface FoliateTtsView {
 export interface TtsStatusResponse {
   enabled: boolean
   reachable: boolean
+  /** Effective per-request input cap reported by the proxy (assertCap value). */
+  maxChunkChars?: number
 }
 
 export interface TtsOptions {
@@ -148,6 +150,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
   const isLoading = ref(false)
   const statusEnabled = ref(false)
   const statusReachable = ref(false)
+  const statusMaxChunkChars = ref<number | null>(null)
   const error = ref<string | null>(null)
 
   const onActivity = options.onActivity
@@ -168,10 +171,21 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
   const prefetchQueue: Promise<Chunk[] | null>[] = []
   /** True once the prefetch cursor reached the end of the current section. */
   let sectionExhausted = false
-  /** Overrides the per-request cap (default 4000, matches the proxy). */
+  /** Optional floor for the per-request cap (default 4000, matches the proxy hard cap). */
   const maxChunkChars = options.maxChunkChars ?? 4000
   /** Number of upcoming blocks to keep synthesised ahead of the current block. */
   const prefetchDepth = Math.max(1, options.prefetchDepth ?? DEFAULT_PREFETCH_DEPTH)
+
+  /**
+   * The effective per-request character cap. Prefers the live value reported by
+   * the proxy's `/status` (so a lowered `TTS_MAX_CHUNK_CHARS` config is respected
+   * without a redeploy of the client); falls back to the configured floor when
+   * the proxy hasn't been probed yet. This keeps client-side splitting synced
+   * with server-side `assertCap`, so overlong blocks are never rejected as 400.
+   */
+  function effectiveCap(): number {
+    return Math.min(maxChunkChars, statusMaxChunkChars.value ?? maxChunkChars)
+  }
 
   let stopped = true
   let advancing = false
@@ -189,9 +203,11 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
       const data = (await res.json()) as TtsStatusResponse
       statusEnabled.value = data.enabled
       statusReachable.value = data.reachable
+      statusMaxChunkChars.value = typeof data.maxChunkChars === 'number' && data.maxChunkChars > 0 ? data.maxChunkChars : null
     } catch {
       statusEnabled.value = false
       statusReachable.value = false
+      statusMaxChunkChars.value = null
     }
   }
 
@@ -306,7 +322,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     return (async (): Promise<Chunk[] | null> => {
       const text = ssmlToPlainText(ssml).trim()
       if (!text) return null // empty block → behaves like an end-of-section marker
-      const chunks: Chunk[] = splitBlock(text, maxChunkChars).map((t) => ({ text: t, blob: null }))
+      const chunks: Chunk[] = splitBlock(text, effectiveCap()).map((t) => ({ text: t, blob: null }))
       const signal = prefetchController!.signal
       for (const chunk of chunks) {
         if (signal.aborted) return null
@@ -484,7 +500,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
         stopAtEndOfBook()
         return
       }
-      currentChunks = splitBlock(text, maxChunkChars).map((t) => ({ text: t, blob: null }))
+      currentChunks = splitBlock(text, effectiveCap()).map((t) => ({ text: t, blob: null }))
       await playChunk(currentChunks.shift()!)
       feedActivity()
       topUpPrefetch()
@@ -530,7 +546,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
         return
       }
 
-      currentChunks = splitBlock(text, maxChunkChars).map((t) => ({ text: t, blob: null }))
+      currentChunks = splitBlock(text, effectiveCap()).map((t) => ({ text: t, blob: null }))
       startActivityInterval()
       await playChunk(currentChunks.shift()!)
       feedActivity()
@@ -563,6 +579,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     isLoading,
     statusEnabled,
     statusReachable,
+    statusMaxChunkChars,
     error,
     checkAvailability,
     readAloud,

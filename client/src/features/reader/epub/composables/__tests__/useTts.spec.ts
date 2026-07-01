@@ -191,14 +191,43 @@ describe('useTts', () => {
     return fake
   }
 
-  it('checkAvailability sets status flags from /api/v1/tts/status when enabled and reachable', async () => {
+  it('checkAvailability sets status flags and the reported cap from /api/v1/tts/status when enabled and reachable', async () => {
     vi.mocked(api).mockResolvedValueOnce(
-      new Response(JSON.stringify({ enabled: true, reachable: true }), { status: 200, headers: { 'content-type': 'application/json' } }),
+      new Response(JSON.stringify({ enabled: true, reachable: true, maxChunkChars: 2500 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
     )
-    const { statusEnabled, statusReachable, checkAvailability } = useTts(() => null)
+    const { statusEnabled, statusReachable, statusMaxChunkChars, checkAvailability } = useTts(() => null)
     await checkAvailability()
     expect(statusEnabled.value).toBe(true)
     expect(statusReachable.value).toBe(true)
+    expect(statusMaxChunkChars.value).toBe(2500)
+  })
+
+  it('readAloud splits overlong blocks at the server-reported cap, not the hardcoded floor', async () => {
+    // Lower the server cap via /status to 100; the client must split at ≤100 even
+    // though the option/option-less default is 4000.
+    vi.mocked(api)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ enabled: true, reachable: true, maxChunkChars: 100 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      )
+      .mockImplementation(okSynth())
+    const view = makeView([[ssml('a'.repeat(250) + ' one.') + ' ' + ssml('two')]])
+    installAudio()
+    const { checkAvailability, readAloud } = useTts(() => view) // default cap 4000
+    await checkAvailability()
+    await readAloud()
+    await flush()
+    // Every synth request sent ≤ the reported 100-char cap.
+    for (const call of vi.mocked(api).mock.calls) {
+      if (String(call[0]) !== '/api/v1/tts/synthesize') continue
+      const body = JSON.parse((call[1]?.body as string) ?? '{}')
+      expect(body.input.length).toBeLessThanOrEqual(100)
+    }
   })
   it('checkAvailability reports unavailable on a non-ok response', async () => {
     vi.mocked(api).mockResolvedValueOnce(new Response(null, { status: 503 }))
