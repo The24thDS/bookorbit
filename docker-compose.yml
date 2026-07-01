@@ -27,8 +27,16 @@ services:
       PGID: ${PGID:-1000}
       NODE_MAX_OLD_SPACE_SIZE: ${NODE_MAX_OLD_SPACE_SIZE:-auto}
       BOOK_DOCK_PATH: ${BOOK_DOCK_PATH:-}
+      TTS_ENABLED: ${TTS_ENABLED:-false}
+      POCKET_TTS_URL: ${POCKET_TTS_URL:-http://pocket-tts:8000}
+      TTS_REQUEST_TIMEOUT_MS: ${TTS_REQUEST_TIMEOUT_MS:-30000}
+      TTS_MAX_CHUNK_CHARS: ${TTS_MAX_CHUNK_CHARS:-3000}
+      TTS_MAX_CONCURRENT_JOBS: ${TTS_MAX_CONCURRENT_JOBS:-1}
+      TTS_DEFAULT_VOICE: ${TTS_DEFAULT_VOICE:-}
     depends_on:
       postgres:
+        condition: service_healthy
+      pocket-tts:
         condition: service_healthy
     volumes:
       - ${BOOKS_HOST_PATH:-./books}:/books
@@ -78,3 +86,31 @@ services:
       timeout: 5s
       retries: 10
       start_period: 20s
+
+  pocket-tts:
+    container_name: bookorbit-pocket-tts
+    build: ./docker/pocket-tts
+    restart: unless-stopped
+    # CPU-only INT8 ONNX sidecar. Loopback-only publish so the host (and dev
+    # NestJS running outside compose) can reach it; the app talks to it over
+    # the compose network as http://pocket-tts:8000.
+    ports:
+      - "127.0.0.1:${POCKET_TTS_PORT:-8001}:8000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "deno",
+          "eval",
+          "const r=await fetch('http://127.0.0.1:8000/health');Deno.exit(r.status===200?0:1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      # Five INT8 ONNX models + default-voice pre-conditioning take a while on
+      # a cold CPU start; overshoot so `app` doesn't race ahead of readiness.
+      start_period: 120s

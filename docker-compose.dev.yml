@@ -22,5 +22,31 @@ services:
       timeout: 5s
       retries: 5
 
+  # PocketTTS sidecar. In dev, `app` runs on the host (not in compose), so
+  # the NestJS process reaches the sidecar via the published loopback port
+  # (POCKET_TTS_URL=http://localhost:8001 by default — see .env.example).
+  pocket-tts:
+    container_name: bookorbit-dev-pocket-tts
+    build: ./docker/pocket-tts
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${POCKET_TTS_PORT:-8001}:8000"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "deno",
+          "eval",
+          "const r=await fetch('http://127.0.0.1:8000/health');Deno.exit(r.status===200?0:1)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
 volumes:
   postgres_data:

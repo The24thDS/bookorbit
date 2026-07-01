@@ -140,8 +140,8 @@ collide with renames/scans.
 - `postgres` is a sibling service on the compose network.
 
 So generated audio is written to the **RW `/books` or `/data` volume**, not
-the read-only rootfs. A `pockettts` sidecar joins the same network and is
-addressable as `http://pockettts:<port>`.
+the read-only rootfs. A `pocket-tts` sidecar joins the same network and is
+addressable as `http://pocket-tts:<port>`.
 
 ---
 
@@ -212,15 +212,15 @@ Add to **both** `docker-compose.yml` and `docker-compose.dev.yml`.
 > mount them as a volume.
 
 ```yaml
-  pockettts:
-    container_name: bookorbit-pockettts
-    build: ./docker/pockettts        # or image: ghcr.io/<you>/pockettts-deno:tag
+  pocket-tts:
+    container_name: bookorbit-pocket-tts
+    build: ./docker/pocket-tts        # or image: ghcr.io/<you>/pocket-tts-deno:tag
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${POCKETTTS_PORT:-8001}:8000"   # loopback only; app talks over the compose net
+      - "127.0.0.1:${POCKET_TTS_PORT:-8001}:8000"   # loopback only; app talks over the compose net
     # CPU-only ONNX (INT8). No GPU passthrough needed.
     volumes:
-      - pockettts_models:/models       # bake or mount the ONNX models here
+      - pocket-tts-models:/models       # bake or mount the ONNX models here
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]  # 200 ready / 503 loading
       interval: 30s
@@ -229,11 +229,11 @@ Add to **both** `docker-compose.yml` and `docker-compose.dev.yml`.
       start_period: 60s
 ```
 
-`app` gets `depends_on: { pockettts: { condition: service_healthy } }`. Inside
-the network the sidecar is `http://pockettts:8000`.
+`app` gets `depends_on: { pocket-tts: { condition: service_healthy } }`. Inside
+the network the sidecar is `http://pocket-tts:8000`.
 
 For **dev** (where `app` runs on host, not in compose), point
-`POCKETTTS_URL=http://localhost:8001` so the host NestJS can reach the
+`POCKET_TTS_URL=http://localhost:8001` so the host NestJS can reach the
 published port.
 
 ---
@@ -245,7 +245,7 @@ Add to `server/src/config/config.ts`:
 ```ts
 export const ttsConfig = registerAs('tts', () => ({
   enabled: parseBooleanFlag(process.env.TTS_ENABLED, false),
-  pocketTtsUrl: process.env.POCKETTTS_URL ?? 'http://pockettts:8000',
+  pocketTtsUrl: process.env.POCKET_TTS_URL ?? 'http://pocket-tts:8000',
   requestTimeoutMs: parsePositiveInteger(process.env.TTS_REQUEST_TIMEOUT_MS, 30_000),
   maxChunkChars: parsePositiveInteger(process.env.TTS_MAX_CHUNK_CHARS, 3000),
   maxConcurrentJobs: parsePositiveInteger(process.env.TTS_MAX_CONCURRENT_JOBS, 1),
@@ -259,7 +259,7 @@ schema in `env.validation.ts`; document in `.env.example`:
 ```dotenv
 # PocketTTS sidecar (optional). Disabled by default.
 TTS_ENABLED=false
-POCKETTTS_URL=http://pockettts:8000
+POCKET_TTS_URL=http://pocket-tts:8000
 # TTS_REQUEST_TIMEOUT_MS=30000
 # TTS_MAX_CHUNK_CHARS=3000
 # TTS_MAX_CONCURRENT_JOBS=1
@@ -278,14 +278,14 @@ map.
 |------|--------|------------|
 | **API confirmed — plain text in** | PocketTTS accepts **plain text**, not SSML (confirmed in `server.ts:handleSpeech`). | Strip foliate's SSML wrapper to plain text per block (`tts.#speak(doc)` without the mark-getter serializes plain text). Keep the mark `Range`s client-side for block highlighting. |
 | **No word timestamps** | PocketTTS streams WAV only; no per-word timing returned. | Highlight at **block level** (current spoken block via `setMark`), not word-level karaoke. Word-sync would need forced-alignment (out of scope). |
-| **No official Docker image** | `pocket-tts-deno` ships source only; ~190 MB of ONNX models + wasm. | Author a `docker/pockettts/Dockerfile` (Deno base) baking in models, or mount them as a volume. |
+| **No official Docker image** | `pocket-tts-deno` ships source only; ~190 MB of ONNX models + wasm. | Author a `docker/pocket-tts/Dockerfile` (Deno base) baking in models, or mount them as a volume. |
 | **CPU-only, slow** | INT8 ONNX on CPU; a single request saturates cores and may run slower than realtime for long text. No GPU option in this port. | `TtsQueueService` concurrency default **1**; chunk by spine item; persist progress; surface queue position in notification `meta`. For Mode A, stream per-block so the user hears the first block while later ones generate. |
 | **`speed` ignored / no language param** | `server.ts` accepts `speed` and `response_format` for OpenAI-compat but ignores both; voice selects timbre, not language. | Expose playback-rate on the client `<audio>` element instead of server `speed`. Language follows the model (kyutai pocket-tts is multilingual); don't expose a language picker unless verified. |
 | **Voice cloning is in-memory** | `POST /v1/voices` stores embeddings in RAM; lost on sidecar restart. | Treat custom voices as ephemeral Phase 3; persisting them is a sidecar enhancement, not BookOrbit's concern initially. |
 | **Long conversion jobs** | 300-page book = hours of audio; HTTP timeouts, crashes mid-run. | Chunk by spine item; persist per-chunk status in `tts_jobs`; resumable; concurrency-limit the queue. |
 | **Read-only container** | `app` is `read_only: true` + `tmpfs:/tmp`. | Write generated audio to the RW `/books` or `/data` volume via `FileWriteService`, never the rootfs. |
 | **Browser CSP** | Direct browser→sidecar calls blocked by app CSP (sidecar CORS is open, but CSP still blocks). | Proxy TTS through NestJS (`/api/v1/tts/synthesize`, `/api/v1/tts/voices`). |
-| **Audio stitching deps** | M4B muxing/chaptering needs ffmpeg in the app image. | Confirm ffmpeg is in the app image, or stitch WAV→M4B inside the `pockettts` container, or emit concatenated WAV/MP3 segments instead. |
+| **Audio stitching deps** | M4B muxing/chaptering needs ffmpeg in the app image. | Confirm ffmpeg is in the app image, or stitch WAV→M4B inside the `pocket-tts` container, or emit concatenated WAV/MP3 segments instead. |
 | **Library scanner collision** | Writing a new file while a scan runs. | Use `FileLockService.withLock('book:'+bookId, …)`. |
 
 ---
@@ -293,10 +293,10 @@ map.
 ## 6. Recommended phase order
 
 1. **Spike (mostly done):** the API contract is confirmed in §8. Remaining
-   spike work: build the `pockettts` Docker image, run it, and `curl`
+   spike work: build the `pocket-tts` Docker image, run it, and `curl`
    `/v1/audio/speech` end-to-end to measure **throughput** (audio-seconds per
    wall-clock-second on the target CPU) — this sets `TTS_MAX_CHUNK_CHARS` and
-   the queue concurrency defaults. Write findings into `docs/POCKETTTS_API.md`.
+   the queue concurrency defaults. Write findings into `docs/POCKET_TTS_API.md`.
 2. **Phase 1 — Live reader TTS:** `useTts.ts` composable, two NestJS proxy
    endpoints, dev-compose sidecar. Highest user value, smallest scope.
 3. **Phase 2 — Async conversion:** `server/src/modules/tts/` module (Hardcover
@@ -328,10 +328,10 @@ map.
 - book detail action: "Convert to audiobook" button → `POST /api/v1/tts/convert/:bookId`
 
 **Infra:**
-- `docker-compose.yml`, `docker-compose.dev.yml` — `pockettts` service
-- `docker/pockettts/Dockerfile` — Deno base + models (none shipped upstream)
+- `docker-compose.yml`, `docker-compose.dev.yml` — `pocket-tts` service
+- `docker/pocket-tts/Dockerfile` — Deno base + models (none shipped upstream)
 - `.env.example` — TTS_* vars
-- `docs/POCKETTTS_API.md` — recorded sidecar throughput benchmarks (from spike)
+- `docs/POCKET_TTS_API.md` — recorded sidecar throughput benchmarks (from spike)
 
 ---
 
