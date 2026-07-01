@@ -247,11 +247,17 @@ const {
   bookLanguage,
 } = useFoliate(() => containerRef.value, onRelocateHandler, onApplyStylesHandler, onMiddleTapHandler)
 
-// Read-aloud (issue #2): one-block tracer bullet. The button hides when TTS is
-// disabled/down, the user lacks the TtsAccess permission, or the reader is in
-// peek mode (handled inside ReaderHeader).
+// Read-aloud (issue #3): continuous block-to-block narration with one-block-ahead
+// prefetch, section traversal, and reading-session feeding. The button hides
+// when TTS is disabled/down, the user lacks the TtsAccess permission, or the
+// reader is in peek mode (handled inside ReaderHeader).
 const { hasPermission } = usePermissions()
-const tts = useTts(() => foliateView.value as unknown as FoliateTtsView | null)
+const tts = useTts(() => foliateView.value as unknown as FoliateTtsView | null, {
+  onActivity, // read-aloud counts as a reading session (ADR-0002)
+  onEndOfBook: () => toast.info('Finished reading aloud.', { duration: 3000 }),
+  getSectionIndex: () => sectionIndex.value,
+  getTotalSections: () => totalSections.value,
+})
 const ttsAvailable = computed(() => hasPermission(Permission.TtsAccess) && tts.statusEnabled.value && tts.statusReachable.value)
 watch(
   () => tts.error.value,
