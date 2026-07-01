@@ -5,7 +5,17 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 
-import { appConfig, authConfig, dbConfig, emailConfig, fileWriteConfig, migrationConfig, oidcRuntimeConfig, storageConfig } from './config/config';
+import {
+  appConfig,
+  authConfig,
+  dbConfig,
+  emailConfig,
+  fileWriteConfig,
+  migrationConfig,
+  oidcRuntimeConfig,
+  storageConfig,
+  ttsConfig,
+} from './config/config';
 import { validateEnv } from './config/env.validation';
 import { loggerConfig } from './common/logger.config';
 import { CommonModule } from './common/common.module';
@@ -66,6 +76,7 @@ import { AchievementModule } from './modules/achievement/achievement.module';
 import { HardcoverModule } from './modules/hardcover/hardcover.module';
 import { CustomMetadataModule } from './modules/custom-metadata/custom-metadata.module';
 import { CustomIconModule } from './modules/custom-icon/custom-icon.module';
+import { TtsModule } from './modules/tts/tts.module';
 
 @Module({
   imports: [
@@ -73,7 +84,7 @@ import { CustomIconModule } from './modules/custom-icon/custom-icon.module';
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnv,
-      load: [appConfig, dbConfig, authConfig, storageConfig, fileWriteConfig, emailConfig, migrationConfig, oidcRuntimeConfig],
+      load: [appConfig, dbConfig, authConfig, storageConfig, fileWriteConfig, emailConfig, migrationConfig, oidcRuntimeConfig, ttsConfig],
     }),
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot({
@@ -138,6 +149,7 @@ import { CustomIconModule } from './modules/custom-icon/custom-icon.module';
     AppInfoModule,
     ReleaseNotesModule,
     AchievementModule,
+    TtsModule,
     HardcoverModule,
   ],
   providers: [

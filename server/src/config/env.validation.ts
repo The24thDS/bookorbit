@@ -59,6 +59,13 @@ const envSchema = z.object({
   OIDC_ALLOW_LOCAL_ISSUERS: booleanEnvFlag('OIDC_ALLOW_LOCAL_ISSUERS'),
   CSP_ALLOW_CLOUDFLARE_INSIGHTS: booleanEnvFlag('CSP_ALLOW_CLOUDFLARE_INSIGHTS'),
   SWAGGER_ENABLED: booleanEnvFlag('SWAGGER_ENABLED'),
+  // PocketTTS sidecar (read-aloud / ebook-to-audiobook). Optional; disabled by default.
+  TTS_ENABLED: booleanEnvFlag('TTS_ENABLED'),
+  POCKET_TTS_URL: z.string().optional(),
+  TTS_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().optional(),
+  TTS_MAX_CHUNK_CHARS: z.coerce.number().int().positive().optional(),
+  TTS_MAX_CONCURRENT_JOBS: z.coerce.number().int().positive().optional(),
+  TTS_DEFAULT_VOICE: z.string().optional(),
   KOBO_CLOUDSCRAPER_PYTHON: z
     .string()
     .transform((val) => val.trim())

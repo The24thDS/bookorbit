@@ -27,6 +27,9 @@ export enum Permission {
 
   // Notifications
   NotificationAccess = "notification_access",
+
+  // Read-aloud
+  TtsAccess = "tts_access",
 }
 
 export const PERMISSION_LABELS: Record<Permission, string> = {
@@ -49,4 +52,5 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   [Permission.ManageUsers]: "Manage users",
   [Permission.ViewAuditLog]: "View audit log",
   [Permission.NotificationAccess]: "Notifications",
+  [Permission.TtsAccess]: "TTS read-aloud",
 };
