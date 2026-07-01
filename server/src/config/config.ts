@@ -48,6 +48,15 @@ export const migrationConfig = registerAs('migration', () => ({
   encryptionKey: process.env.MIGRATION_ENCRYPTION_KEY ?? '',
 }));
 
+export const ttsConfig = registerAs('tts', () => ({
+  enabled: parseBooleanFlag(process.env.TTS_ENABLED, false),
+  pocketTtsUrl: process.env.POCKET_TTS_URL ?? 'http://pocket-tts:8000',
+  requestTimeoutMs: parsePositiveInteger(process.env.TTS_REQUEST_TIMEOUT_MS, 60_000),
+  maxChunkChars: parsePositiveInteger(process.env.TTS_MAX_CHUNK_CHARS, 4000),
+  maxConcurrentJobs: parsePositiveInteger(process.env.TTS_MAX_CONCURRENT_JOBS, 1),
+  defaultVoice: process.env.TTS_DEFAULT_VOICE?.trim() || undefined,
+}));
+
 export const oidcRuntimeConfig = registerAs('oidcRuntime', () => ({
   stateTtlMs: parsePositiveInteger(process.env.OIDC_STATE_TTL_SECS, 300) * 1000,
   discoveryCacheTtlMs: parsePositiveInteger(process.env.OIDC_DISCOVERY_CACHE_TTL_SECS, 3600) * 1000,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import {
   ArrowLeft,
   BookOpen,
@@ -9,10 +9,13 @@ import {
   CircleHelp,
   Clock3,
   FileText,
+  LoaderCircle,
   Maximize,
   Minimize,
   Search,
   Settings,
+  Square,
+  Volume2,
 } from '@lucide/vue'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -23,6 +26,9 @@ const props = defineProps<{
   settingsOpen: boolean
   footerMode: 0 | 1 | 2
   peekMode?: boolean
+  ttsAvailable?: boolean
+  ttsPlaying?: boolean
+  ttsLoading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -35,7 +41,12 @@ const emit = defineEmits<{
   toggleHelp: []
   cycleFooterMode: []
   startReading: []
+  toggleTts: []
 }>()
+
+// Hidden entirely when TTS is off/down, the user lacks TtsAccess, or the reader
+// is in peek mode (no full reading session = no read-aloud). See issue #2.
+const showTtsButton = computed(() => props.ttsAvailable && !props.peekMode)
 
 const isFullscreen = ref(false)
 
@@ -61,6 +72,16 @@ function getFooterModeTooltip(mode: 0 | 1 | 2): string {
 
 onMounted(() => document.addEventListener('fullscreenchange', onFullscreenChange))
 onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenChange))
+
+function getTtsIcon() {
+  if (props.ttsLoading) return LoaderCircle
+  return props.ttsPlaying ? Square : Volume2
+}
+
+function getTtsLabel() {
+  if (props.ttsLoading) return 'Reading block aloud…'
+  return props.ttsPlaying ? 'Stop read aloud' : 'Read aloud'
+}
 </script>
 
 <template>
@@ -116,6 +137,15 @@ onUnmounted(() => document.removeEventListener('fullscreenchange', onFullscreenC
           Start reading
         </button>
       </div>
+
+      <Tooltip v-if="showTtsButton">
+        <TooltipTrigger as-child>
+          <button class="viewer-btn" :class="props.ttsPlaying ? '!text-primary' : ''" :aria-label="getTtsLabel()" @click="emit('toggleTts')">
+            <component :is="getTtsIcon()" :size="18" :class="props.ttsLoading ? 'animate-spin' : ''" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{{ getTtsLabel() }}</TooltipContent>
+      </Tooltip>
 
       <Tooltip>
         <TooltipTrigger as-child>

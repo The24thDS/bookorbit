@@ -17,6 +17,9 @@ import { useToc } from './epub/composables/useToc'
 import { useSearch, type FoliateView } from './epub/composables/useSearch'
 import { useReaderSelection } from './epub/composables/useReaderSelection'
 import { useReaderKeyboardShortcuts } from './epub/composables/useReaderKeyboardShortcuts'
+import { useTts, type FoliateTtsView } from './epub/composables/useTts'
+import { usePermissions } from '@/features/auth/composables/usePermissions'
+import { Permission } from '@bookorbit/types'
 import ReaderHeader from './epub/components/ReaderHeader.vue'
 import ReaderFooter from './epub/components/ReaderFooter.vue'
 import ReaderSidebar from './epub/components/ReaderSidebar.vue'
@@ -246,6 +249,26 @@ const {
   isFixedLayout,
 } = useFoliate(() => containerRef.value, onRelocateHandler, onApplyStylesHandler, onMiddleTapHandler)
 
+// Read-aloud (issue #3): continuous block-to-block narration with one-block-ahead
+// prefetch, section traversal, and reading-session feeding. The button hides
+// when TTS is disabled/down, the user lacks the TtsAccess permission, or the
+// reader is in peek mode (handled inside ReaderHeader).
+const { hasPermission } = usePermissions()
+const tts = useTts(() => foliateView.value as unknown as FoliateTtsView | null, {
+  onActivity, // read-aloud counts as a reading session (ADR-0002)
+  onEndOfBook: () => toast.info('Finished reading aloud.', { duration: 3000 }),
+  getSectionIndex: () => sectionIndex.value,
+  getTotalSections: () => totalSections.value,
+  prefetchDepth: 3,
+})
+const ttsAvailable = computed(() => hasPermission(Permission.TtsAccess) && tts.statusEnabled.value && tts.statusReachable.value)
+watch(
+  () => tts.error.value,
+  (msg) => {
+    if (msg) toast.error(msg, { duration: 3500 })
+  },
+)
+
 function handleTextSelected(detail: SelectionDetail) {
   const selCfi = detail.cfi
   const match = selCfi ? (annotations.annotations.value.find((a) => a.cfi != null && cfiRangesOverlap(selCfi, a.cfi)) ?? null) : null
@@ -270,6 +293,9 @@ onMounted(async () => {
 
   // Specialized readers own their own progress/settings/loading lifecycle.
   if (isAudioFormat || isPdfFormat || isComicFormat) return
+
+  // EPUB reader only: probe TTS feature availability (drives "Read aloud" vis).
+  void tts.checkAvailability()
 
   await customFonts.fetchFonts()
   setFontFaceCSS(customFonts.generateFontFaceCSS())
@@ -587,6 +613,9 @@ watch(
       :settings-open="showSettings"
       :footerMode="footerMode"
       :peek-mode="isPeekMode"
+      :ttsAvailable="ttsAvailable"
+      :ttsPlaying="tts.isPlaying.value"
+      :ttsLoading="tts.isLoading.value"
       class="transition-all duration-300"
       :class="headerVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-full pointer-events-none'"
       @back="router.back()"
@@ -598,6 +627,7 @@ watch(
       @toggleHelp="toggleHelpModal"
       @cycleFooterMode="cycleFooterMode"
       @startReading="startTrackedReading"
+      @toggleTts="tts.toggle"
     >
       <template #settingsPanel>
         <ReaderSettingsPanel :state="state" :customFonts="customFonts" :is-fixed-layout="isFixedLayout" @update="applyUpdate" />
