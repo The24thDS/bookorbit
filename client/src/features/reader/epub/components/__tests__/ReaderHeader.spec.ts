@@ -9,6 +9,13 @@ const DropdownMenuStub = defineComponent({
   template: '<div><slot /></div>',
 })
 
+const PopoverStub = defineComponent({
+  name: 'PopoverStub',
+  props: ['open'],
+  emits: ['update:open'],
+  template: '<div><slot /></div>',
+})
+
 describe('ReaderHeader', () => {
   const global = {
     stubs: {
@@ -18,6 +25,9 @@ describe('ReaderHeader', () => {
       DropdownMenu: DropdownMenuStub,
       DropdownMenuTrigger: { template: '<div><slot /></div>' },
       DropdownMenuContent: { template: '<div><slot /></div>' },
+      Popover: PopoverStub,
+      PopoverTrigger: { template: '<div><slot /></div>' },
+      PopoverContent: { template: '<div><slot /></div>' },
     },
   }
 
@@ -62,5 +72,33 @@ describe('ReaderHeader', () => {
 
     wrapper.findComponent(DropdownMenuStub).vm.$emit('update:open', false)
     expect(wrapper.emitted('update:settingsOpen')?.[0]).toEqual([false])
+  })
+
+  it('hides the read-aloud button when TTS is unavailable', () => {
+    const wrapper = mount(ReaderHeader, {
+      props: { chapterTitle: 'C', isBookmarked: false, settingsOpen: false, footerMode: 0, ttsAvailable: false, peekMode: false },
+      global,
+    })
+    expect(wrapper.find('button[aria-label="Read aloud"]').exists()).toBe(false)
+  })
+
+  it('hides the read-aloud button in peek mode', () => {
+    const wrapper = mount(ReaderHeader, {
+      props: { chapterTitle: 'C', isBookmarked: false, settingsOpen: false, footerMode: 0, ttsAvailable: true, peekMode: true },
+      global,
+    })
+    expect(wrapper.find('button[aria-label="Read aloud"]').exists()).toBe(false)
+  })
+
+  it('renders the read-aloud popover trigger and an active state while narrating', () => {
+    const wrapper = mount(ReaderHeader, {
+      props: { chapterTitle: 'C', isBookmarked: false, settingsOpen: false, footerMode: 0, ttsAvailable: true, peekMode: false, ttsPlaying: true },
+      slots: { ttsControls: '<div data-tts-controls />' },
+      global,
+    })
+    const btn = wrapper.get('button[aria-label="Stop read aloud"]')
+    expect(btn.classes().some((c) => c.includes('text-primary'))).toBe(true)
+    expect(btn.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.find('[data-tts-controls]').exists()).toBe(true)
   })
 })

@@ -10,6 +10,7 @@ function makeHandlers(): ShortcutHandlers {
     toggleBookmark: vi.fn<() => void>(),
     toggleFullscreen: vi.fn<() => void>(),
     cycleFooterMode: vi.fn<() => void>(),
+    toggleTts: vi.fn<() => void>(),
     closePanel: vi.fn<() => void>(),
     goToStart: vi.fn<() => void>(),
     goToEnd: vi.fn<() => void>(),
@@ -155,6 +156,33 @@ describe('useReaderKeyboardShortcuts', () => {
     expect(handlers.closePanel).not.toHaveBeenCalled()
     expect(handlers.goToStart).not.toHaveBeenCalled()
     expect(handlers.goToEnd).not.toHaveBeenCalled()
+  })
+
+  it('triggers toggleTts on Alt+P', () => {
+    setup()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', altKey: true, bubbles: true }))
+    expect(handlers.toggleTts).toHaveBeenCalledOnce()
+  })
+
+  it('triggers toggleTts on Alt+Shift+P', () => {
+    setup()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'P', altKey: true, shiftKey: true, bubbles: true }))
+    expect(handlers.toggleTts).toHaveBeenCalledOnce()
+  })
+
+  it('does not trigger toggleTts on a bare p', () => {
+    setup()
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }))
+    expect(handlers.toggleTts).not.toHaveBeenCalled()
+  })
+
+  it('does not trigger toggleTts when an input is focused', () => {
+    setup()
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', altKey: true, bubbles: true }))
+    expect(handlers.toggleTts).not.toHaveBeenCalled()
+    document.body.removeChild(input)
   })
 
   it('cleans up listener on unmount', () => {

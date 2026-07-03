@@ -17,6 +17,7 @@ interface FakeView extends FoliateTtsView {
   initTTSMock: Mock<(g?: string, h?: unknown) => Promise<void>>
   startMock: Mock<() => string>
   nextMock: Mock<() => string>
+  prevMock: Mock<() => string>
   fromMock: Mock<(range: Range) => string>
   goToMock: Mock<(t: string | number) => Promise<unknown>>
   goToCalls: number[]
@@ -39,6 +40,10 @@ function makeView(sections: string[][], opts: { lastRange?: Range | null; fromRe
     return sections[current]?.[cursor] ?? ''
   })
   const fromMock = vi.fn<(range: Range) => string>(() => opts.fromResult ?? sections[current]?.[0] ?? '')
+  const prevMock = vi.fn<() => string>(() => {
+    cursor = Math.max(0, cursor - 1)
+    return sections[current]?.[cursor] ?? ''
+  })
   const initTTSMock = vi.fn<(g?: string, h?: unknown) => Promise<void>>().mockResolvedValue(undefined)
   const goToCalls: number[] = []
   const loadListeners: EventListener[] = []
@@ -49,9 +54,10 @@ function makeView(sections: string[][], opts: { lastRange?: Range | null; fromRe
   const view: FakeView = {
     initTTS: initTTSMock as unknown as FoliateTtsView['initTTS'],
     initTTSMock,
-    tts: { start: startMock, next: nextMock, from: fromMock },
+    tts: { start: startMock, next: nextMock, prev: prevMock, from: fromMock },
     startMock,
     nextMock,
+    prevMock,
     fromMock,
     lastLocation: { range: opts.lastRange === undefined ? ({} as Range) : (opts.lastRange ?? undefined) },
     goTo: goToMock as unknown as FoliateTtsView['goTo'],
@@ -109,6 +115,7 @@ function makeFakeAudio() {
     pause: vi.fn<() => void>(() => {
       queueMicrotask(() => listeners.get('pause')?.forEach((h) => h(new Event('pause'))))
     }),
+    playbackRate: 1,
     src: '',
   }
   return {
@@ -439,17 +446,20 @@ describe('useTts', () => {
     expect(isPlaying.value).toBe(false)
   })
 
-  it('toggle stops playback if currently loading or playing', async () => {
+  it('toggle pauses playback when playing', async () => {
     const view = makeView([[ssml('Hello world')]])
     vi.mocked(api).mockImplementation(okSynth())
-    installAudio()
-    const { readAloud, toggle } = useTts(() => view)
+    const fake = installAudio()
+    const { readAloud, toggle, isPlaying, isPaused } = useTts(() => view)
     await readAloud()
     await flush()
     const callsBefore = vi.mocked(api).mock.calls.length
-    await toggle() // playing → stop (no new request)
+    toggle() // playing → pause (no new request, cursor/prefetch retained)
     await flush()
     expect(vi.mocked(api).mock.calls.length).toBe(callsBefore)
+    expect(isPlaying.value).toBe(false)
+    expect(isPaused.value).toBe(true)
+    expect(fake.audio.pause).toHaveBeenCalled()
   })
 
   it('is reactive: toggling stop updates isPlaying synchronously', async () => {
@@ -466,5 +476,126 @@ describe('useTts', () => {
     stop()
     await flush()
     expect(seen).toBe(true)
+  })
+
+  it('resumes a paused narration without a new synth request', async () => {
+    const view = makeView([[ssml('Hello world'), ssml('Block one')]])
+    vi.mocked(api).mockImplementation(okSynth())
+    const fake = installAudio()
+    const { readAloud, pause, resume, isPlaying } = useTts(() => view)
+    await readAloud()
+    await flush()
+    pause()
+    await flush()
+    expect(isPlaying.value).toBe(false)
+    const playsBefore = fake.audio.play.mock.calls.length
+    resume()
+    await flush()
+    expect(isPlaying.value).toBe(true)
+    expect(fake.audio.play.mock.calls.length).toBe(playsBefore + 1)
+  })
+
+  it('sends the selected voice in the synthesize request body', async () => {
+    const view = makeView([[ssml('Hello world')]])
+    vi.mocked(api).mockImplementation(okSynth())
+    installAudio()
+    const { readAloud, voice } = useTts(() => view)
+    voice.value = 'jean'
+    await readAloud()
+    await flush()
+    const synthCalls = vi.mocked(api).mock.calls.filter((c) => String(c[0]) === '/api/v1/tts/synthesize')
+    const body = JSON.parse((synthCalls[0][1]?.body as string) ?? '{}')
+    expect(body).toEqual({ input: 'Hello world', voice: 'jean' })
+  })
+
+  it('omits voice from the body when none is selected (sidecar default)', async () => {
+    const view = makeView([[ssml('Hello world')]])
+    vi.mocked(api).mockImplementation(okSynth())
+    installAudio()
+    const { readAloud } = useTts(() => view)
+    await readAloud()
+    await flush()
+    const synthCalls = vi.mocked(api).mock.calls.filter((c) => String(c[0]) === '/api/v1/tts/synthesize')
+    expect(JSON.parse((synthCalls[0][1]?.body as string) ?? '{}')).toEqual({ input: 'Hello world' })
+  })
+
+  it('applies the playback rate to the audio element', async () => {
+    const view = makeView([[ssml('Hello world')]])
+    vi.mocked(api).mockImplementation(okSynth())
+    const fake = installAudio()
+    const { readAloud, playbackRate } = useTts(() => view)
+    playbackRate.value = 1.5
+    await readAloud()
+    await flush()
+    expect(fake.audio.playbackRate).toBe(1.5)
+    playbackRate.value = 0.75
+    await flush()
+    expect(fake.audio.playbackRate).toBe(0.75)
+  })
+
+  it('fetchVoices populates the built-in and custom voice lists', async () => {
+    vi.mocked(api).mockResolvedValueOnce(
+      new Response(JSON.stringify({ voices: ['cosette', 'jean', 'my-clone'], builtin: ['cosette', 'jean'], custom: ['my-clone'] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    )
+    const { fetchVoices, builtinVoices, customVoices } = useTts(() => null)
+    await fetchVoices()
+    expect(builtinVoices.value).toEqual(['cosette', 'jean'])
+    expect(customVoices.value).toEqual(['my-clone'])
+  })
+
+  it('fetchVoices leaves the lists empty on an error response', async () => {
+    vi.mocked(api).mockResolvedValueOnce(new Response(null, { status: 503 }))
+    const { fetchVoices, builtinVoices } = useTts(() => null)
+    await fetchVoices()
+    expect(builtinVoices.value).toEqual([])
+  })
+
+  it('skipNext discards the rest of the current block and plays the next block', async () => {
+    const view = makeView([[ssml('Block zero'), ssml('Block one'), ssml('Block two'), ssml('Block three')]])
+    vi.mocked(api).mockImplementation(okSynth())
+    const fake = installAudio()
+    const { readAloud, skipNext } = useTts(() => view)
+    await readAloud()
+    await flush()
+    const playsBefore = fake.audio.play.mock.calls.length
+    await skipNext()
+    await flush()
+    expect(fake.audio.play.mock.calls.length).toBe(playsBefore + 1) // block one plays next, from the prefetch buffer
+    // The next block came from the prefetch buffer, so no new synth request was
+    // issued for it; the buffer absorbed the skip.
+    const synthCalls = vi.mocked(api).mock.calls.filter((c) => String(c[0]) === '/api/v1/tts/synthesize')
+    const synthCountBefore = synthCalls.length // prefetched: b0,b1,b2,b3
+    await skipNext()
+    await flush()
+    expect(fake.audio.play.mock.calls.length).toBe(playsBefore + 2) // skipped again → block two plays
+    const synthAfter = vi.mocked(api).mock.calls.filter((c) => String(c[0]) === '/api/v1/tts/synthesize').length
+    expect(synthAfter).toBeLessThanOrEqual(synthCountBefore + 1) // only the prefetch top-up, no block synth
+  })
+
+  it('skipPrev walks the cursor back one block and re-synthesises it', async () => {
+    // Five blocks; read block 0, advance to block 1, then skip back to block 0.
+    const view = makeView([[ssml('Block zero'), ssml('Block one'), ssml('Block two'), ssml('Block three'), ssml('Block four')]])
+    vi.mocked(api).mockImplementation(okSynth())
+    const fake = installAudio()
+    const { readAloud, skipNext, skipPrev } = useTts(() => view)
+    await readAloud()
+    await flush() // playing block 0, cursor advanced 3 ahead (blocks 1,2,3 prefetched)
+    await skipNext()
+    await flush() // now playing block 1, cursor 4 (block 4 prefetched), ahead 3
+    const playsBefore = fake.audio.play.mock.calls.length
+    const synthCountBefore = vi.mocked(api).mock.calls.filter((c) => String(c[0]) === '/api/v1/tts/synthesize').length
+    await skipPrev()
+    await flush()
+    // prev() walked the cursor back `ahead + 1` = 4 steps to land on block 0.
+    expect(view.prevMock).toHaveBeenCalledTimes(4)
+    expect(fake.audio.play.mock.calls.length).toBe(playsBefore + 1)
+    // The first synth request skipPrev issued re-synthesises block 0 (before its
+    // follow-up prefetch re-synth of blocks 1+).
+    const synthCalls = vi.mocked(api).mock.calls.filter((c) => String(c[0]) === '/api/v1/tts/synthesize')
+    const firstSkipPrevBody = JSON.parse((synthCalls[synthCountBefore][1]?.body as string) ?? '{}')
+    expect(firstSkipPrevBody.input).toBe('Block zero')
   })
 })

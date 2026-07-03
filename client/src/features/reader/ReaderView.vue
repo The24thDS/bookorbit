@@ -31,6 +31,7 @@ import DictionaryPopover from './epub/components/DictionaryPopover.vue'
 import TranslationPopover from './epub/components/TranslationPopover.vue'
 import TranslationSheet from './epub/components/TranslationSheet.vue'
 import KeyboardShortcutsModal from './epub/components/KeyboardShortcutsModal.vue'
+import TtsControls from './epub/components/TtsControls.vue'
 import PdfV4ReaderView from './pdf-v4/PdfV4ReaderView.vue'
 import CbzReaderView from './cbz/CbzReaderView.vue'
 import AudiobookReaderView from './audiobook/AudiobookReaderView.vue'
@@ -146,6 +147,7 @@ const { showHelpModal } = useReaderKeyboardShortcuts({
   },
   toggleFullscreen,
   cycleFooterMode,
+  toggleTts: () => tts.toggle(),
   closePanel: closeAnyPanel,
   goToStart: () => goToFraction(0),
   goToEnd: () => goToFraction(1),
@@ -296,6 +298,7 @@ onMounted(async () => {
 
   // EPUB reader only: probe TTS feature availability (drives "Read aloud" vis).
   void tts.checkAvailability()
+  void tts.fetchVoices()
 
   await customFonts.fetchFonts()
   setFontFaceCSS(customFonts.generateFontFaceCSS())
@@ -627,10 +630,25 @@ watch(
       @toggleHelp="toggleHelpModal"
       @cycleFooterMode="cycleFooterMode"
       @startReading="startTrackedReading"
-      @toggleTts="tts.toggle"
     >
       <template #settingsPanel>
         <ReaderSettingsPanel :state="state" :customFonts="customFonts" :is-fixed-layout="isFixedLayout" @update="applyUpdate" />
+      </template>
+      <template #ttsControls>
+        <TtsControls
+          :is-playing="tts.isPlaying.value"
+          :is-loading="tts.isLoading.value"
+          :builtin-voices="tts.builtinVoices.value"
+          :custom-voices="tts.customVoices.value"
+          :voice="tts.voice.value"
+          :playback-rate="tts.playbackRate.value"
+          @toggle="tts.toggle"
+          @stop="tts.stop"
+          @skip-next="tts.skipNext"
+          @skip-prev="tts.skipPrev"
+          @update:voice="tts.voice.value = $event"
+          @update:playback-rate="tts.playbackRate.value = $event"
+        />
       </template>
     </ReaderHeader>
 

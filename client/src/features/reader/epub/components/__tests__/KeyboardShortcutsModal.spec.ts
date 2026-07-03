@@ -26,6 +26,8 @@ describe('KeyboardShortcutsModal', () => {
     expect(text).toContain('Go to end of book')
     expect(text).toContain('Close panel')
     expect(text).toContain('Previous/next page')
+    expect(text).toContain('Toggle read aloud (play/pause)')
+    expect(text).toContain('Alt+P')
   })
 
   it('renders the title', () => {
