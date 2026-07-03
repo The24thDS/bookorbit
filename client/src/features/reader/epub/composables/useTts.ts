@@ -1,4 +1,4 @@
-import { onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { api } from '@/lib/api'
 
 /**
@@ -29,6 +29,14 @@ export interface TtsStatusResponse {
   reachable: boolean
   /** Effective per-request input cap reported by the proxy (assertCap value). */
   maxChunkChars?: number
+}
+
+/** Sidecar voice list shape (`GET /v1/voices` — see docs/POCKET_TTS_API.md). */
+export interface TtsVoicesResponse {
+  /** Flat list of every available voice id (built-in + custom). */
+  voices: string[]
+  builtin: string[]
+  custom: string[]
 }
 
 export interface TtsOptions {
@@ -153,6 +161,17 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
   const statusMaxChunkChars = ref<number | null>(null)
   const error = ref<string | null>(null)
 
+  /** Selected Voice (a synthetic timbre per CONTEXT.md — never a Narrator); null = sidecar default. */
+  const voice = ref<string | null>(null)
+  /** Client-side playback rate applied to the <audio> element (0.75×–2×); the sidecar accepts but ignores `speed`. */
+  const playbackRate = ref(1)
+  /** Raw sidecar voice list, split into built-in and custom groups for the picker. */
+  const voicesRaw = ref<TtsVoicesResponse | null>(null)
+  const builtinVoices = computed(() => voicesRaw.value?.builtin ?? [])
+  const customVoices = computed(() => voicesRaw.value?.custom ?? [])
+  /** True while narration is paused mid-block (distinct from idle/stopped, which can only start fresh). */
+  const isPaused = ref(false)
+
   const onActivity = options.onActivity
   const onEndOfBook = options.onEndOfBook
   const getSectionIndex = options.getSectionIndex
@@ -175,6 +194,13 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
   const maxChunkChars = options.maxChunkChars ?? 4000
   /** Number of upcoming blocks to keep synthesised ahead of the current block. */
   const prefetchDepth = Math.max(1, options.prefetchDepth ?? DEFAULT_PREFETCH_DEPTH)
+  /**
+   * How many blocks the foliate TTS cursor sits ahead of the block currently
+   * playing — the number of `tts.next()` calls whose blocks still sit in the
+   * prefetch queue (end-of-section sentinels excluded, since they don't move
+   * the cursor). Drives {@link skipPrev}'s cursor math without a block index.
+   */
+  let prefetchAhead = 0
 
   /**
    * The effective per-request character cap. Prefers the live value reported by
@@ -211,6 +237,18 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     }
   }
 
+  /** Populate the Voice picker from `GET /api/v1/tts/voices`. Fails silently — the picker just stays empty. */
+  async function fetchVoices(): Promise<void> {
+    try {
+      const res = await api('/api/v1/tts/voices')
+      if (!res.ok) return
+      const data = (await res.json()) as TtsVoicesResponse
+      if (data && Array.isArray(data.voices)) voicesRaw.value = data
+    } catch {
+      // sidecar down / no permission — picker stays empty, feature still works with the sidecar default
+    }
+  }
+
   function ensureAudio(): HTMLAudioElement {
     if (!audio) audio = new Audio()
     if (!audioWired) {
@@ -230,6 +268,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
       })
       audioWired = true
     }
+    audio.playbackRate = playbackRate.value
     return audio
   }
 
@@ -267,6 +306,8 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     currentChunks = []
     prefetchQueue.length = 0
     sectionExhausted = false
+    prefetchAhead = 0
+    isPaused.value = false
     isPlaying.value = false
     isLoading.value = false
   }
@@ -275,7 +316,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     const res = await api('/api/v1/tts/synthesize', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: text }),
+      body: JSON.stringify({ input: text, voice: voice.value ?? undefined }),
       signal,
     })
     if (res.status === 503) {
@@ -310,6 +351,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     if (objectUrl) URL.revokeObjectURL(objectUrl)
     objectUrl = URL.createObjectURL(blob)
     el.src = objectUrl
+    el.playbackRate = playbackRate.value
     await el.play()
   }
 
@@ -362,6 +404,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
         break
       }
       prefetchQueue.push(synthesizeBlockPromise(ssml))
+      prefetchAhead++
     }
   }
 
@@ -414,6 +457,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     }
 
     // Cue the prefetched block as current and start it; feed the session.
+    prefetchAhead = Math.max(0, prefetchAhead - 1)
     currentChunks = prefetched
     try {
       await playChunk(currentChunks.shift()!)
@@ -435,6 +479,7 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     }
     prefetchQueue.length = 0
     sectionExhausted = false
+    prefetchAhead = 0
 
     const view = getView()
     if (!view?.goTo || !view?.addEventListener) {
@@ -564,26 +609,164 @@ export function useTts(getView: () => FoliateTtsView | null, options: TtsOptions
     resetPlayback()
   }
 
-  async function toggle(): Promise<void> {
-    if (isLoading.value || isPlaying.value) {
+  /** Pause narration in place — keep the cursor/prefetch, just halt the audio and stop feeding the session. */
+  function pause(): void {
+    if (stopped || !audio) return
+    isPaused.value = true
+    if (activityInterval) {
+      clearInterval(activityInterval)
+      activityInterval = null
+    }
+    audio.pause()
+    isPlaying.value = false
+  }
+
+  /** Resume a paused narration from where it stopped. */
+  function resume(): void {
+    if (stopped || !audio) return
+    isPaused.value = false
+    void audio.play()
+    startActivityInterval()
+  }
+
+  /** Jump to the next block: discard the rest of the current block and pull the already-prefetched next one. */
+  async function skipNext(): Promise<void> {
+    if (stopped || advancing) return
+    advancing = true
+    try {
+      if (audio) audio.pause()
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
+      if (controller) {
+        controller.abort()
+        controller = null
+      }
+      currentChunks = []
+      isPaused.value = false // resume-on-skip: clear a mid-block pause.
+      await advance()
+    } finally {
+      advancing = false
+    }
+  }
+
+  /** Jump back one block by walking foliate's cursor backwards, then re-synthesise + play. */
+  async function skipPrev(): Promise<void> {
+    if (stopped || advancing) return
+    const view = getView()
+    if (!view?.tts?.prev) return
+    const tts = view.tts!
+    advancing = true
+    isLoading.value = true
+    try {
+      // Cancel the current block + in-flight prefetch, keeping the foliate cursor.
+      if (audio) audio.pause()
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl)
+        objectUrl = null
+      }
+      if (controller) {
+        controller.abort()
+        controller = null
+      }
+      if (prefetchController) {
+        prefetchController.abort()
+        prefetchController = null
+      }
+      prefetchQueue.length = 0
+      currentChunks = []
+      sectionExhausted = false
+      isPlaying.value = false
+      isPaused.value = false
+
+      // The cursor sits `prefetchAhead` blocks ahead of the playing block, so
+      // `prefetchAhead + 1` prev() calls lands on the previous block. An empty
+      // result means we hit the start of the section — fall back to re-reading
+      // block 0.
+      const steps = prefetchAhead + 1
+      let ssml = ''
+      for (let i = 0; i < steps; i++) {
+        const s = tts.prev!() ?? ''
+        if (!s) {
+          ssml = ''
+          break
+        }
+        ssml = s
+      }
+      if (!ssml) {
+        await view.initTTS?.()
+        ssml = tts.start?.() ?? ''
+      }
+      prefetchAhead = 0
+
+      const text = ssmlToPlainText(ssml).trim()
+      if (!text) {
+        resetPlayback()
+        return
+      }
+      currentChunks = splitBlock(text, effectiveCap()).map((t) => ({ text: t, blob: null }))
+      prefetchController = new AbortController()
+      startActivityInterval()
+      try {
+        await playChunk(currentChunks.shift()!)
+        feedActivity()
+        topUpPrefetch()
+      } catch (err) {
+        if ((err as Error)?.name === 'AbortError') return
+        error.value = err instanceof Error ? err.message : 'Read aloud failed.'
+        resetPlayback()
+      }
+    } finally {
+      isLoading.value = false
+      advancing = false
+    }
+  }
+
+  /** Smart play/pause: the Alt+P shortcut and the popover toggle button both call this. */
+  function toggle(): void {
+    if (isLoading.value) {
       stop()
       return
     }
-    await readAloud()
+    if (isPlaying.value) {
+      pause()
+      return
+    }
+    if (isPaused.value && audio) {
+      resume()
+      return
+    }
+    void readAloud()
   }
+
+  // Apply a live speed change to the already-playing audio element.
+  watch(playbackRate, (rate) => {
+    if (audio) audio.playbackRate = rate
+  })
 
   onUnmounted(() => resetPlayback())
 
   return {
     isPlaying,
     isLoading,
+    isPaused,
     statusEnabled,
     statusReachable,
     statusMaxChunkChars,
+    voice,
+    playbackRate,
+    builtinVoices,
+    customVoices,
     error,
     checkAvailability,
+    fetchVoices,
     readAloud,
     stop,
+    pause,
+    resume,
+    skipNext,
+    skipPrev,
     toggle,
   }
 }

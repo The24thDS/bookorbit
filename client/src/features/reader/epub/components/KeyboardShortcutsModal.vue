@@ -20,6 +20,7 @@ const shortcutGroups = [
     title: 'Reading',
     shortcuts: [
       { key: '← →', description: 'Previous/next page' },
+      { key: 'Alt+P', description: 'Toggle read aloud (play/pause)' },
       { key: 'Home', description: 'Go to start of book' },
       { key: 'End', description: 'Go to end of book' },
     ],

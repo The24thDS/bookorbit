@@ -6,6 +6,8 @@ export interface ShortcutHandlers {
   toggleBookmark: () => void
   toggleFullscreen: () => void
   cycleFooterMode: () => void
+  /** Alt+P — toggles read-aloud play/pause. */
+  toggleTts: () => void
   closePanel: () => void
   goToStart: () => void
   goToEnd: () => void
@@ -19,6 +21,13 @@ export function useReaderKeyboardShortcuts(handlers: ShortcutHandlers) {
   function onKeyDown(e: KeyboardEvent) {
     const target = (e.composedPath?.()[0] || e.target) as HTMLElement | null
     if (target && (INTERACTIVE_TAGS.has(target.tagName) || target.isContentEditable)) return
+
+    // Alt+P — toggle read-aloud (modifier shortcut, checked before the bare-key switch).
+    if (e.altKey && (e.key === 'p' || e.key === 'P')) {
+      e.preventDefault()
+      handlers.toggleTts()
+      return
+    }
 
     switch (e.key) {
       case 't':

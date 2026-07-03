@@ -18,6 +18,7 @@ import {
   Volume2,
 } from '@lucide/vue'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 
 const props = defineProps<{
@@ -41,12 +42,15 @@ const emit = defineEmits<{
   toggleHelp: []
   cycleFooterMode: []
   startReading: []
-  toggleTts: []
 }>()
 
 // Hidden entirely when TTS is off/down, the user lacks TtsAccess, or the reader
 // is in peek mode (no full reading session = no read-aloud). See issue #2.
 const showTtsButton = computed(() => props.ttsAvailable && !props.peekMode)
+
+// The TTS control popover is toolbar-local state (radix closes it on Escape and
+// outside click); the parent doesn't need to drive its open state.
+const ttsOpen = ref(false)
 
 const isFullscreen = ref(false)
 
@@ -138,14 +142,22 @@ function getTtsLabel() {
         </button>
       </div>
 
-      <Tooltip v-if="showTtsButton">
-        <TooltipTrigger as-child>
-          <button class="viewer-btn" :class="props.ttsPlaying ? '!text-primary' : ''" :aria-label="getTtsLabel()" @click="emit('toggleTts')">
+      <Popover v-if="showTtsButton" v-model:open="ttsOpen">
+        <PopoverTrigger as-child>
+          <button
+            class="viewer-btn"
+            :class="props.ttsPlaying ? '!text-primary' : ''"
+            :title="getTtsLabel()"
+            :aria-label="getTtsLabel()"
+            :aria-pressed="props.ttsPlaying"
+          >
             <component :is="getTtsIcon()" :size="18" :class="props.ttsLoading ? 'animate-spin' : ''" />
           </button>
-        </TooltipTrigger>
-        <TooltipContent>{{ getTtsLabel() }}</TooltipContent>
-      </Tooltip>
+        </PopoverTrigger>
+        <PopoverContent align="end" :side-offset="10" class="w-72 max-w-[calc(100vw-1rem)] rounded-lg border-border bg-card p-0 shadow-2xl">
+          <slot name="ttsControls" />
+        </PopoverContent>
+      </Popover>
 
       <Tooltip>
         <TooltipTrigger as-child>
